@@ -43,13 +43,10 @@ _PUBLIC_URL = os.environ.get("GEOLATENT_PUBLIC_URL", "http://localhost:8001").rs
 # In-memory subscription cache (backed by DB in production)
 _subscriptions: dict[str, dict] = {}   # tenant_id → subscription info
 
-# Dev/demo mode: grant studio tier to all tenants so gates don't block exploration
-_GEOLATENT_MODE = os.environ.get("GEOLATENT_MODE", "production").lower()
-
-
 def _effective_tier(tenant_id: str) -> str:
     """Return tier, upgrading to 'studio' in dev/demo mode."""
-    if _GEOLATENT_MODE in ("dev", "demo"):
+    # Read at call-time so tests and runtime env changes take effect immediately
+    if os.environ.get("GEOLATENT_MODE", "production").lower() in ("dev", "demo"):
         return "studio"
     return _subscriptions.get(tenant_id, {}).get("tier", "free")
 
