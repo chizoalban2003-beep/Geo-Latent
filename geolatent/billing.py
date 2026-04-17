@@ -37,9 +37,21 @@ _STRIPE_PRICES: dict[str, str] = {
     "studio":     os.environ.get("STRIPE_PRICE_STUDIO",     ""),
     "enterprise": os.environ.get("STRIPE_PRICE_ENTERPRISE", ""),
 }
+# Public URL for Stripe redirect — falls back to localhost for local dev
+_PUBLIC_URL = os.environ.get("GEOLATENT_PUBLIC_URL", "http://localhost:8001").rstrip("/")
 
 # In-memory subscription cache (backed by DB in production)
 _subscriptions: dict[str, dict] = {}   # tenant_id → subscription info
+
+# Dev/demo mode: grant studio tier to all tenants so gates don't block exploration
+_GEOLATENT_MODE = os.environ.get("GEOLATENT_MODE", "production").lower()
+
+
+def _effective_tier(tenant_id: str) -> str:
+    """Return tier, upgrading to 'studio' in dev/demo mode."""
+    if _GEOLATENT_MODE in ("dev", "demo"):
+        return "studio"
+    return _subscriptions.get(tenant_id, {}).get("tier", "free")
 
 
 # ---------------------------------------------------------------------------
@@ -127,8 +139,7 @@ PLANS = {
 
 def get_tenant_tier(tenant_id: str) -> str:
     """Return the current tier string for a tenant."""
-    sub = _subscriptions.get(tenant_id, {})
-    return sub.get("tier", "free")
+    return _effective_tier(tenant_id)
 
 
 def check_gate(tenant_id: str, gate: str) -> bool:
@@ -212,8 +223,8 @@ async def create_checkout(request: Request):
         "mode":                       "subscription",
         "line_items[0][price]":       plan["stripe_price_id"],
         "line_items[0][quantity]":    "1",
-        "success_url":                body.get("success_url", "http://localhost:8000/?checkout=success"),
-        "cancel_url":                 body.get("cancel_url",  "http://localhost:8000/?checkout=cancel"),
+        "success_url":                body.get("success_url", f"{_PUBLIC_URL}/?checkout=success"),
+        "cancel_url":                 body.get("cancel_url",  f"{_PUBLIC_URL}/?checkout=cancel"),
         "client_reference_id":        auth.get("tenant_id", ""),
         "metadata[tenant_id]":        auth.get("tenant_id", ""),
     }).encode()
@@ -247,7 +258,7 @@ async def create_portal(request: Request):
     import urllib.request, urllib.parse
     data = urllib.parse.urlencode({
         "customer":    customer_id,
-        "return_url":  "http://localhost:8000/",
+        "return_url":  f"{_PUBLIC_URL}/",
     }).encode()
     req = urllib.request.Request(
         "https://api.stripe.com/v1/billing_portal/sessions",

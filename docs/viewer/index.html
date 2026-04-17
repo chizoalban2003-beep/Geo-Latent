@@ -175,7 +175,9 @@ canvas.mini{width:100%;height:36px;display:block}
    ============================================================ */
 'use strict';
 
-const API_BASE = window.location.origin;
+// Allow ?host=http://localhost:8001 to point at any server
+const _params = new URLSearchParams(window.location.search);
+const API_BASE = (_params.get('host') || window.location.origin).replace(/\/$/, '');
 let paused = false, mergeMode = false, tick = 0;
 let entH = Array(60).fill(1.5), energyH = Array(40).fill(0.5), siphH = Array(40).fill(0.3);
 let cEvts = [], cIdx = 0;
@@ -213,12 +215,17 @@ scene3.add(pLight);
 const COLS = 40, ROWS = 24;
 let terrainMesh = null, wireMesh = null;
 let currentTerrain = null; // flat array [ROWS][COLS]
+let terrainCols = COLS, terrainRows = ROWS; // updated when server data arrives
 
-function buildTerrainMesh(heightData) {
+function buildTerrainMesh(heightData, cols, rows) {
+  cols = cols || COLS; rows = rows || ROWS;
+  terrainCols = cols; terrainRows = rows;
   if (terrainMesh) { scene3.remove(terrainMesh); scene3.remove(wireMesh); }
 
-  const geo = new THREE.PlaneGeometry(1, 1, COLS-1, ROWS-1);
+  const geo = new THREE.PlaneGeometry(1, 1, cols-1, rows-1);
   geo.rotateX(-Math.PI/2);
+  // Shift so terrain spans [0,1] in X and Z instead of [-0.5, 0.5]
+  geo.translate(0.5, 0, 0.5);
   const pos = geo.attributes.position;
 
   let max = 0;
@@ -336,17 +343,29 @@ function genTerrain(t) {
 /* ── API polling ─────────────────────────────────────────── */
 let apiOnline = false, wsConn = null, pollInterval = null;
 
+function setStatusBar(msg, color) {
+  const sb = document.getElementById('status-bar');
+  if (sb) { sb.textContent = msg; if (color) sb.style.color = color; }
+}
+
 async function pollAPI() {
   try {
     const r = await fetch(API_BASE + '/frame', {
       headers:{'X-Tenant-Id':'demo','X-Principal-Id':'viewer','X-Role':'viewer'},
       signal: AbortSignal.timeout(2000)
     });
-    if (!r.ok) throw new Error('not ok');
+    if (!r.ok) throw new Error('status ' + r.status);
     const data = await r.json();
-    if (!apiOnline) { apiOnline = true; loadingMsg('API connected — live data active'); }
+    if (!apiOnline) {
+      apiOnline = true;
+      setStatusBar('● LIVE  ' + API_BASE + '  — GEO-LATENT v3.0', 'rgba(0,212,180,.75)');
+      loadingMsg('API connected — live data active');
+    }
     applyFrame(data);
   } catch(e) {
+    if (apiOnline) {
+      setStatusBar('⚠ API OFFLINE — standalone simulation  (' + API_BASE + ')', 'rgba(215,88,48,.75)');
+    }
     apiOnline = false;
   }
 }
@@ -369,12 +388,20 @@ async function fetchScene() {
     if (!r.ok) return;
     const sc = await r.json();
     if (sc.vertices && sc.vertices.length) {
-      // Build flat array from vertices Y channel
-      const flat = new Float32Array(ROWS*COLS);
+      // Vertex format from server: [x_col_norm, y_height_norm, z_row_norm]
+      // Vertices are in row-major order: index = row * cols + col
+      const srvCols = sc.grid_w || COLS;
+      const srvRows = sc.grid_h || ROWS;
+      const flat = new Float32Array(srvRows * srvCols);
       const verts = sc.vertices;
-      const n = Math.min(verts.length, ROWS*COLS);
-      for (let i = 0; i < n; i++) flat[i] = (verts[i][1] || 0) * 5;
-      buildTerrainMesh(flat);
+      for (let i = 0; i < verts.length; i++) {
+        const col = Math.round(verts[i][0] * (srvCols - 1));
+        const row = Math.round(verts[i][2] * (srvRows - 1));
+        if (row >= 0 && row < srvRows && col >= 0 && col < srvCols) {
+          flat[row * srvCols + col] = verts[i][1] * 5; // y = normalised height
+        }
+      }
+      buildTerrainMesh(flat, srvCols, srvRows);
     }
   } catch(e) {}
 }
@@ -568,13 +595,17 @@ canvas.addEventListener('mousemove', e => {
     const hits = raycaster.intersectObject(terrainMesh);
     if (hits.length) {
       const p = hits[0].point;
-      const gx = Math.round(p.x * (COLS-1)), gz = Math.round(p.z * (ROWS-1));
+      // Terrain spans [0,1] in X and Z after translate(0.5, 0, 0.5)
+      const gx = Math.round(Math.max(0, Math.min(1, p.x)) * (terrainCols - 1));
+      const gz = Math.round(Math.max(0, Math.min(1, p.z)) * (terrainRows - 1));
+      const xn = (gx / (terrainCols - 1)).toFixed(3);
+      const zn = (gz / (terrainRows - 1)).toFixed(3);
       const h  = p.y.toFixed(3);
       const anom = p.y > 0.1;
       tooltip.style.display = 'block';
       tooltip.style.left = (e.clientX + 14) + 'px';
       tooltip.style.top  = Math.max(0, e.clientY - 48) + 'px';
-      tooltip.innerHTML  = `CELL (${gx}, ${gz})<br>HEIGHT ${h}<br>${anom ? '⚠ ANOMALY ZONE' : '◈ KDE TERRAIN'}`;
+      tooltip.innerHTML  = `CELL (${gx}, ${gz})<br>COORD (${xn}, ${zn})<br>HEIGHT ${h}<br>${anom ? '⚠ ANOMALY ZONE' : '◈ KDE TERRAIN'}`;
     } else {
       tooltip.style.display = 'none';
     }
@@ -642,7 +673,8 @@ async function init() {
   buildNodeGraph();
   renderCael();
 
-  loadingMsg('Connecting to observatory API...');
+  loadingMsg(`Connecting to ${API_BASE} ...`);
+  setStatusBar(`Connecting to ${API_BASE} …`, 'rgba(186,117,23,.75)');
   await pollAPI();
   if (apiOnline) {
     await fetchScene();
@@ -650,7 +682,11 @@ async function init() {
     pollInterval = setInterval(() => { pollAPI(); }, 800);
     setInterval(() => { if(apiOnline) fetchScene(); }, 5000);
   } else {
-    loadingMsg('API offline — standalone simulation mode.');
+    loadingMsg(
+      `API offline — standalone simulation.  ` +
+      `To connect: open viewer with ?host=http://YOUR_SERVER:PORT`
+    );
+    setStatusBar('⚠ OFFLINE — STANDALONE SIMULATION', 'rgba(215,88,48,.75)');
   }
 
   // Fade loading screen

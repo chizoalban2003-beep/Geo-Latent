@@ -135,14 +135,30 @@ app.add_middleware(
 def get_pool(request: Request):
     pool = request.app.state.db_pool
     if pool is None:
-        raise HTTPException(503, "Database not available")
+        from geolatent.auth import ALLOW_DEV_HDR
+        hint = (
+            " Set DATABASE_URL in .env to enable persistence, or use dev-header auth "
+            "(GEOLATENT_ALLOW_HEADER_DEV=true) for a no-DB demo."
+            if not ALLOW_DEV_HDR
+            else " Set DATABASE_URL in .env to enable persistence features."
+        )
+        raise HTTPException(503, "Database not available." + hint)
     return pool
+
+
+def get_pool_optional(request: Request):
+    """Returns pool or None — for endpoints that gracefully degrade without DB."""
+    return request.app.state.db_pool
 
 
 def get_engine(request: Request):
     engine = request.app.state.engine
     if engine is None:
-        raise HTTPException(503, "Simulation engine not loaded. Start with /run_once or POST /controls.")
+        raise HTTPException(
+            503,
+            "Simulation engine not loaded. "
+            "Restart the server — if it keeps failing, check server logs for the warm-up error.",
+        )
     return engine
 
 
@@ -163,6 +179,44 @@ async def health(request: Request):
         "engine": request.app.state.engine is not None,
         "db": request.app.state.db_pool is not None,
         "redis": request.app.state.redis is not None,
+    }
+
+
+@app.get("/health/detailed", tags=["core"])
+async def health_detailed(request: Request):
+    from geolatent.auth import ALLOW_DEV_HDR, OIDC_JWKS_URI, GEOLATENT_MODE, _OIDC_SIG_VERIFIED
+    engine = request.app.state.engine
+    engine_info: dict = {"loaded": engine is not None}
+    if engine:
+        engine_info.update({
+            "step":          engine.state.step,
+            "active_points": len(engine.state.active),
+            "paused":        engine._paused,
+            "inflow_mode":   engine._controls.get("inflow_mode"),
+        })
+    db_url = os.environ.get("DATABASE_URL", "")
+    return {
+        "status": "ok",
+        "mode":   GEOLATENT_MODE,
+        "engine": engine_info,
+        "db": {
+            "connected": request.app.state.db_pool is not None,
+            "configured": bool(db_url),
+            "hint": None if db_url else "Set DATABASE_URL in .env to enable persistence.",
+        },
+        "redis": {
+            "connected": request.app.state.redis is not None,
+            "configured": bool(os.environ.get("GEOLATENT_REDIS_URL", "")),
+        },
+        "auth": {
+            "dev_headers_enabled": ALLOW_DEV_HDR,
+            "oidc_configured":     bool(OIDC_JWKS_URI),
+            "oidc_sig_verified":   _OIDC_SIG_VERIFIED,
+        },
+        "observers": sum(
+            len(v) for v in request.app.state.observer_registry.values()
+        ),
+        "ws_clients": len(request.app.state.ws_clients),
     }
 
 
@@ -235,6 +289,92 @@ async def snapshot(request: Request, auth: dict = Depends(get_auth)):
     engine = get_engine(request)
     snap = engine.snapshot()
     return {"status": "ok", "snapshot": snap}
+
+
+# ---------------------------------------------------------------------------
+# Nexus — programmatic data injection
+# ---------------------------------------------------------------------------
+
+@app.post("/nexus/inflow", tags=["nexus"])
+async def nexus_inflow(request: Request, auth: dict = Depends(get_auth)):
+    """
+    Inject data points directly into the running simulation.
+
+    Accepts a JSON body with one of:
+      { "points": [{"x": 0.5, "y": 0.3, "energy": 1.0, "kind": "neutral"}, ...] }
+      { "csv": "<raw CSV string with x,y columns>" }
+      { "text": "free-text description" }  — hashes into deterministic coordinates
+
+    Returns the number of points injected and the new frame state.
+    """
+    from geolatent.simulator import DataPoint
+    engine = get_engine(request)
+    body = await request.json()
+    injected = 0
+
+    if "points" in body:
+        for p in body["points"]:
+            try:
+                engine.state.active.append(DataPoint(
+                    x=float(p.get("x", 0.5)),
+                    y=float(p.get("y", 0.5)),
+                    energy=float(p.get("energy", 1.0)),
+                    kind=str(p.get("kind", "neutral")),
+                    variance=float(p.get("variance", 0.0)),
+                ))
+                injected += 1
+            except (TypeError, ValueError):
+                pass
+
+    elif "csv" in body:
+        try:
+            from geolatent.adapters import from_csv_bytes
+            pts = from_csv_bytes(body["csv"].encode())
+            for pt in pts:
+                engine.state.active.append(pt)
+            injected = len(pts)
+        except Exception as exc:
+            raise HTTPException(400, f"CSV parse error: {exc}")
+
+    elif "text" in body:
+        import hashlib as _hl
+        text = str(body["text"])
+        h = _hl.sha256(text.encode()).digest()
+        n = body.get("n", max(1, len(text) // 20))
+        for i in range(n):
+            seed = _hl.sha256(h + i.to_bytes(4, "big")).digest()
+            engine.state.active.append(DataPoint(
+                x=seed[0] / 255,
+                y=seed[1] / 255,
+                energy=0.5 + seed[2] / 510,
+                kind="neutral",
+            ))
+        injected = n
+
+    else:
+        raise HTTPException(400, "Body must contain 'points', 'csv', or 'text'.")
+
+    engine._refresh()
+    return {"injected": injected, "active": len(engine.state.active), "frame": engine.current_frame()}
+
+
+@app.get("/nexus/schema", tags=["nexus"])
+async def nexus_schema():
+    """Runtime contract for external integrations."""
+    return {
+        "version":    "3.0.0",
+        "inflow":     "POST /nexus/inflow",
+        "frame":      "GET /frame",
+        "scene":      "GET /scene",
+        "controls":   "GET|POST /controls",
+        "websocket":  "/ws",
+        "auth": {
+            "jwt":        "POST /auth/login  (requires DATABASE_URL)",
+            "dev_token":  "POST /auth/dev-token  (requires GEOLATENT_ALLOW_HEADER_DEV=true)",
+            "dev_headers":"X-Tenant-Id + X-Principal-Id  (requires GEOLATENT_ALLOW_HEADER_DEV=true)",
+        },
+        "inflow_modes": ["neutral", "prey", "predator", "neutral_to_predatory", "finance_predator_prey"],
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -317,9 +457,34 @@ async def ws_stream(websocket: WebSocket):
 # Auth endpoints
 # ---------------------------------------------------------------------------
 
+@app.post("/auth/dev-token", tags=["auth"])
+async def auth_dev_token(request: Request):
+    """
+    Issue a signed JWT for local development without a database.
+    Only available when GEOLATENT_ALLOW_HEADER_DEV=true.
+    """
+    from geolatent.auth import ALLOW_DEV_HDR, issue_jwt
+    if not ALLOW_DEV_HDR:
+        raise HTTPException(403, "Dev tokens are disabled. Set GEOLATENT_ALLOW_HEADER_DEV=true.")
+    body = await request.json()
+    claims = {
+        "tenant_id":    body.get("tenant_id", "dev-tenant"),
+        "principal_id": body.get("principal_id", "dev-user"),
+        "role":         body.get("role", "admin"),
+        "email":        body.get("email", "dev@example.com"),
+        "dev":          True,
+    }
+    return {"token": issue_jwt(claims), "note": "Dev token — do not use in production."}
+
+
 @app.post("/auth/bootstrap", tags=["auth"])
-async def auth_bootstrap(request: Request, pool=Depends(get_pool)):
+async def auth_bootstrap(request: Request, pool=Depends(get_pool_optional)):
     from geolatent.auth import bootstrap_admin
+    if pool is None:
+        raise HTTPException(
+            503,
+            "Database not available. Use POST /auth/dev-token for a no-DB development token."
+        )
     body = await request.json()
     async with pool.connection() as conn:
         token = await bootstrap_admin(conn, body)
@@ -327,8 +492,13 @@ async def auth_bootstrap(request: Request, pool=Depends(get_pool)):
 
 
 @app.post("/auth/login", tags=["auth"])
-async def auth_login(request: Request, pool=Depends(get_pool)):
+async def auth_login(request: Request, pool=Depends(get_pool_optional)):
     from geolatent.auth import login_user
+    if pool is None:
+        raise HTTPException(
+            503,
+            "Database not available. Use POST /auth/dev-token for a no-DB development token."
+        )
     body = await request.json()
     async with pool.connection() as conn:
         token = await login_user(conn, body)
@@ -341,7 +511,9 @@ async def auth_me(auth: dict = Depends(get_auth)):
 
 
 @app.get("/auth/invitations", tags=["auth"])
-async def list_invitations(request: Request, auth: dict = Depends(get_auth), pool=Depends(get_pool)):
+async def list_invitations(request: Request, auth: dict = Depends(get_auth), pool=Depends(get_pool_optional)):
+    if pool is None:
+        return []
     from geolatent.auth import get_invitations
     async with pool.connection() as conn:
         return await get_invitations(conn, auth["tenant_id"])
@@ -368,15 +540,22 @@ async def accept_invitation(request: Request, pool=Depends(get_pool)):
 # Workspace SaaS endpoints
 # ---------------------------------------------------------------------------
 
+_NO_DB_HINT = {"_note": "Database not configured — set DATABASE_URL in .env for persistence."}
+
+
 @app.get("/workspace/dashboard", tags=["workspace"])
-async def ws_dashboard(auth: dict = Depends(get_auth), pool=Depends(get_pool)):
+async def ws_dashboard(auth: dict = Depends(get_auth), pool=Depends(get_pool_optional)):
+    if pool is None:
+        return {**_NO_DB_HINT, "projects": 0, "datasets": 0, "runs": 0}
     from geolatent.persistence_db import get_dashboard
     async with pool.connection() as conn:
         return await get_dashboard(conn, auth["tenant_id"])
 
 
 @app.get("/workspace/projects", tags=["workspace"])
-async def list_projects(auth: dict = Depends(get_auth), pool=Depends(get_pool)):
+async def list_projects(auth: dict = Depends(get_auth), pool=Depends(get_pool_optional)):
+    if pool is None:
+        return []
     from geolatent.persistence_db import list_projects as _list
     async with pool.connection() as conn:
         return await _list(conn, auth["tenant_id"])
@@ -399,7 +578,9 @@ async def share_project(project_id: str, request: Request, auth: dict = Depends(
 
 
 @app.get("/workspace/datasets", tags=["workspace"])
-async def list_datasets(auth: dict = Depends(get_auth), pool=Depends(get_pool)):
+async def list_datasets(auth: dict = Depends(get_auth), pool=Depends(get_pool_optional)):
+    if pool is None:
+        return []
     from geolatent.persistence_db import list_datasets as _list
     async with pool.connection() as conn:
         return await _list(conn, auth["tenant_id"])
@@ -410,8 +591,28 @@ async def upload_dataset(
     request: Request,
     file: UploadFile = File(...),
     auth: dict = Depends(get_auth),
-    pool=Depends(get_pool),
+    pool=Depends(get_pool_optional),
 ):
+    if pool is None:
+        # In dev mode: parse CSV and inject directly into the running engine
+        engine = request.app.state.engine
+        if engine is None:
+            raise HTTPException(503, "No database and no engine loaded — cannot ingest dataset.")
+        content = await file.read()
+        try:
+            from geolatent.adapters import from_csv_bytes
+            points = from_csv_bytes(content)
+            for pt in points:
+                engine.state.active.append(pt)
+            engine._refresh()
+        except Exception as exc:
+            raise HTTPException(400, f"Failed to parse dataset: {exc}")
+        return {
+            "id":       None,
+            "filename": file.filename,
+            "points":   len(points),
+            "_note":    "Injected directly into the running engine (no DB). Set DATABASE_URL to persist.",
+        }
     from geolatent.persistence_db import save_dataset
     content = await file.read()
     async with pool.connection() as conn:
@@ -420,7 +621,9 @@ async def upload_dataset(
 
 
 @app.get("/workspace/runs", tags=["workspace"])
-async def list_runs(auth: dict = Depends(get_auth), pool=Depends(get_pool)):
+async def list_runs(auth: dict = Depends(get_auth), pool=Depends(get_pool_optional)):
+    if pool is None:
+        return []
     from geolatent.persistence_db import list_runs as _list
     async with pool.connection() as conn:
         return await _list(conn, auth["tenant_id"])
@@ -443,7 +646,9 @@ async def compare_runs(request: Request, auth: dict = Depends(get_auth), pool=De
 
 
 @app.get("/workspace/access", tags=["workspace"])
-async def get_access(auth: dict = Depends(get_auth), pool=Depends(get_pool)):
+async def get_access(auth: dict = Depends(get_auth), pool=Depends(get_pool_optional)):
+    if pool is None:
+        return []
     from geolatent.persistence_db import get_access_log
     async with pool.connection() as conn:
         return await get_access_log(conn, auth["tenant_id"])

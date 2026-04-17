@@ -30,6 +30,24 @@ ALLOW_DEV_HDR    = os.environ.get("GEOLATENT_ALLOW_HEADER_DEV",
                                    "false").lower() == "true"
 TOKEN_TTL        = int(os.environ.get("GEOLATENT_TOKEN_TTL", str(60 * 60 * 24)))  # 24 h
 WS_CHALLENGE_TTL = 30   # seconds — ephemeral WebSocket token window
+GEOLATENT_MODE   = os.environ.get("GEOLATENT_MODE", "production").lower()  # demo|dev|production
+
+# Warn at import time if OIDC is configured without a real signature library
+if OIDC_JWKS_URI:
+    try:
+        from jose import jwt as _jose_jwt  # noqa: F401
+        _OIDC_SIG_VERIFIED = True
+    except ImportError:
+        import sys as _sys
+        print(
+            "[geo-latent] WARNING: GEOLATENT_OIDC_JWKS_URI is set but python-jose is not installed. "
+            "RS256 tokens will NOT have their signatures verified — install python-jose[cryptography] "
+            "before enabling OIDC in production.",
+            file=_sys.stderr,
+        )
+        _OIDC_SIG_VERIFIED = False
+else:
+    _OIDC_SIG_VERIFIED = True
 
 
 # ---------------------------------------------------------------------------
@@ -106,29 +124,32 @@ async def _fetch_jwks() -> list:
 async def _verify_rs256(token: str) -> dict:
     """
     Verify RS256 JWT from an OIDC provider.
-    Uses stdlib only — no PyJWT dependency required.
-    For production use, install `python-jose[cryptography]` and replace
-    the body of this function with:
-        from jose import jwt
-        return jwt.decode(token, _get_public_key(kid), algorithms=["RS256"])
+    Uses python-jose when available (install: pip install python-jose[cryptography]).
+    Falls back to structural-only validation in dev/demo mode with a warning.
+    Raises ValueError on any failure.
     """
     parts = token.split(".")
     if len(parts) != 3:
         raise ValueError("malformed jwt")
+
+    if _OIDC_SIG_VERIFIED:
+        # Full signature verification via python-jose
+        from jose import jwt as _jose_jwt, JWTError
+        keys = await _fetch_jwks()
+        try:
+            return _jose_jwt.decode(token, {"keys": keys}, algorithms=["RS256"])
+        except JWTError as exc:
+            raise ValueError(str(exc)) from exc
+
+    # Signature not verified — only allowed in dev/demo mode
+    if GEOLATENT_MODE == "production":
+        raise ValueError(
+            "RS256 signature verification unavailable in production — "
+            "install python-jose[cryptography]"
+        )
     payload = json.loads(_b64url_decode(parts[1]))
     if payload.get("exp", 0) < time.time():
         raise ValueError("token expired")
-    # Basic structural validation — signature is verified by the OIDC provider
-    # in a real deployment via python-jose or authlib.
-    # To enable full RS256 sig verification, install python-jose:
-    #   pip install python-jose[cryptography]
-    # and uncomment:
-    #   keys = await _fetch_jwks()
-    #   from jose import jwt as _jwt
-    #   kid = json.loads(_b64url_decode(parts[0])).get("kid")
-    #   key = next((k for k in keys if k.get("kid") == kid), None)
-    #   if not key: raise ValueError("unknown kid")
-    #   payload = _jwt.decode(token, key, algorithms=["RS256"])
     return payload
 
 
