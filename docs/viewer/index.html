@@ -1,0 +1,669 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Geo-latent v3.0 — Spatial Data-OS</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{width:100%;height:100%;overflow:hidden;background:#050912;font-family:'Courier New',monospace;color:#00d4b4}
+#canvas{display:block;width:100%;height:100%}
+
+/* ── HUD overlay ── */
+#hud{position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:10}
+
+.panel{position:absolute;background:rgba(2,10,26,.92);border:.5px solid rgba(0,195,165,.55);pointer-events:all}
+.panel-title{font-size:9px;color:rgba(0,212,180,.85);padding:5px 8px 3px;border-bottom:.5px solid rgba(0,175,148,.25);letter-spacing:.08em}
+
+/* corners */
+.panel::before,.panel::after,
+.panel .c3,.panel .c4{content:'';position:absolute;width:10px;height:10px;border-color:rgba(0,195,165,.7);border-style:solid}
+.panel::before{top:0;left:0;border-width:1.5px 0 0 1.5px}
+.panel::after {top:0;right:0;border-width:1.5px 1.5px 0 0}
+.panel .c3{bottom:0;left:0;border-width:0 0 1.5px 1.5px}
+.panel .c4{bottom:0;right:0;border-width:0 1.5px 1.5px 0}
+
+#p-mapper  {top:0;left:0;width:170px;height:90px}
+#p-entropy {top:0;left:170px;width:170px;height:90px}
+#p-siphon  {top:0;left:340px;width:170px;height:90px}
+#p-cael    {top:0;right:0;width:170px;height:90px}
+#p-chronicle{bottom:0;left:0;width:50%;height:100px}
+#p-infra   {bottom:0;right:0;width:50%;height:100px}
+#p-controls{position:absolute;top:50%;right:0;transform:translateY(-50%);width:160px;background:rgba(2,10,26,.88);border:.5px solid rgba(0,195,165,.45);padding:8px;pointer-events:all}
+
+.panel-body{padding:6px 8px;font-size:8px;line-height:1.6;color:rgba(180,225,215,.8)}
+canvas.mini{width:100%;height:36px;display:block}
+
+.bar-row{display:flex;align-items:center;gap:4px;margin:2px 0}
+.bar-label{font-size:7px;color:rgba(140,200,190,.7);width:52px;flex-shrink:0}
+.bar-track{flex:1;height:6px;background:rgba(0,50,42,.6);border:.5px solid rgba(0,172,148,.3);position:relative}
+.bar-fill{height:100%;transition:width .4s}
+.bar-val{font-size:7px;width:26px;text-align:right;color:rgba(0,215,182,.8)}
+
+.cael-row{display:flex;gap:4px;padding:2px 0;border-bottom:.5px solid rgba(0,172,148,.12);align-items:flex-start}
+.cael-badge{font-size:7px;font-weight:700;padding:1px 5px;border-radius:2px;white-space:nowrap;flex-shrink:0;margin-top:1px}
+.cael-msg{font-size:7px;color:rgba(160,205,195,.75);line-height:1.4}
+
+.node-graph{position:relative;height:60px}
+.node-dot{position:absolute;width:10px;height:10px;border-radius:50%;background:rgba(0,62,52,.9);border:.7px solid rgba(0,182,155,.72);transform:translate(-50%,-50%)}
+.node-lbl{position:absolute;font-size:6.5px;color:rgba(0,202,170,.78);transform:translate(-50%,6px);white-space:nowrap}
+
+#status-bar{position:absolute;bottom:104px;left:0;width:100%;text-align:center;font-size:9px;color:rgba(0,192,162,.65);letter-spacing:.1em;pointer-events:none}
+
+/* Controls panel */
+#p-controls label{font-size:7px;color:rgba(140,200,190,.75);display:block;margin:5px 0 2px}
+#p-controls input[type=range]{width:100%;height:3px;margin-bottom:1px}
+#p-controls button{width:100%;background:transparent;border:.5px solid rgba(0,195,165,.5);color:rgba(0,212,180,.85);font:8px 'Courier New',monospace;padding:4px;cursor:pointer;margin-top:4px}
+#p-controls button:hover{background:rgba(0,195,165,.12)}
+#p-controls .ctrl-title{font-size:8px;color:rgba(0,212,180,.85);border-bottom:.5px solid rgba(0,175,148,.25);margin-bottom:6px;padding-bottom:3px;letter-spacing:.08em}
+
+/* Tooltip */
+#tooltip{position:absolute;display:none;background:rgba(2,10,26,.96);border:.5px solid rgba(0,195,165,.7);padding:5px 9px;font:8px 'Courier New',monospace;color:rgba(0,210,178,.9);line-height:1.6;pointer-events:none;z-index:20}
+
+/* Loading screen */
+#loading{position:absolute;top:0;left:0;width:100%;height:100%;background:#050912;display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:100;transition:opacity .6s}
+#loading h1{font-size:22px;letter-spacing:.2em;color:#00d4b4;margin-bottom:8px}
+#loading p{font-size:11px;color:rgba(0,185,155,.6);letter-spacing:.1em}
+#loading .bar{width:200px;height:2px;background:rgba(0,195,165,.2);margin-top:24px;position:relative;overflow:hidden}
+#loading .bar::after{content:'';position:absolute;top:0;left:-60%;width:60%;height:100%;background:rgba(0,212,180,.7);animation:scan 1.2s ease-in-out infinite}
+@keyframes scan{to{left:110%}}
+</style>
+</head>
+<body>
+
+<div id="loading">
+  <h1>GEO-LATENT</h1>
+  <p>SPATIAL DATA-OS v3.0</p>
+  <div class="bar"></div>
+  <p id="load-msg" style="margin-top:12px;font-size:9px">Initialising engine...</p>
+</div>
+
+<canvas id="canvas"></canvas>
+
+<!-- HUD -->
+<div id="hud">
+
+  <!-- Panel 1: Schematic Mapper -->
+  <div class="panel" id="p-mapper">
+    <div class="panel-title">① UNIVERSAL SCHEMATIC MAPPER</div>
+    <div class="panel-body" id="mapper-body">
+      <div style="display:flex;align-items:center;gap:4px;margin-bottom:4px">
+        <div style="background:rgba(0,72,58,.55);border:.5px solid rgba(0,172,145,.55);padding:2px 5px;font-size:7px">JSON</div>
+        <div style="font-size:8px;color:rgba(0,190,162,.6)">→</div>
+        <div style="background:rgba(0,72,58,.55);border:.5px solid rgba(0,172,145,.55);padding:2px 5px;font-size:7px">PIPELINE</div>
+        <div style="font-size:8px;color:rgba(0,190,162,.6)">→</div>
+        <div style="background:rgba(0,72,58,.55);border:.5px solid rgba(0,172,145,.55);padding:2px 5px;font-size:7px">GEO-GRID</div>
+      </div>
+      <div style="font-size:7px;color:rgba(0,185,155,.55)">▸ entity_id  ▸ timestamp<br>▸ payload_value  ▸ variance_score</div>
+      <div id="mapper-stats" style="font-size:7px;color:rgba(0,205,172,.7);margin-top:3px">active: — | abyss: — | atmos: —</div>
+    </div>
+    <div class="c3"></div><div class="c4"></div>
+  </div>
+
+  <!-- Panel 2: NCA Entropy -->
+  <div class="panel" id="p-entropy">
+    <div class="panel-title">② NCA HOMEOSTASIS / ENTROPY</div>
+    <div class="panel-body">
+      <canvas class="mini" id="entropy-chart"></canvas>
+      <div id="entropy-label" style="font-size:7px;margin-top:2px;color:rgba(186,117,23,.85)">H(X) = — &nbsp;●&nbsp; NOMINAL</div>
+    </div>
+    <div class="c3"></div><div class="c4"></div>
+  </div>
+
+  <!-- Panel 3: Observer / Siphon -->
+  <div class="panel" id="p-siphon">
+    <div class="panel-title">③ OBSERVER SIPHON CONTROL</div>
+    <div class="panel-body">
+      <div class="bar-row"><span class="bar-label">ENERGY CODEX</span><div class="bar-track"><div class="bar-fill" id="bar-energy" style="width:60%;background:rgba(0,195,165,.65)"></div></div><span class="bar-val" id="bv-energy">60%</span></div>
+      <div class="bar-row"><span class="bar-label">SIPHON DEV.</span><div class="bar-track"><div class="bar-fill" id="bar-siphon" style="width:30%;background:rgba(127,119,221,.65)"></div></div><span class="bar-val" id="bv-siphon">30%</span></div>
+      <div class="bar-row"><span class="bar-label">BIAS CHAIN</span><div class="bar-track"><div class="bar-fill" id="bar-bias" style="width:75%;background:rgba(0,195,165,.65)"></div></div><span class="bar-val" id="bv-bias">75%</span></div>
+      <canvas class="mini" id="siphon-chart" style="margin-top:3px;height:22px"></canvas>
+    </div>
+    <div class="c3"></div><div class="c4"></div>
+  </div>
+
+  <!-- Panel 4: CAEL -->
+  <div class="panel" id="p-cael">
+    <div class="panel-title">④ CAEL SEMANTIC LOG</div>
+    <div class="panel-body" id="cael-body" style="padding:4px 6px"></div>
+    <div class="c3"></div><div class="c4"></div>
+  </div>
+
+  <!-- Panel 5 bottom-left: Chronicle -->
+  <div class="panel" id="p-chronicle">
+    <div class="panel-title">CAEL EVENT CHRONICLE</div>
+    <div class="panel-body" id="chronicle" style="max-height:72px;overflow-y:auto;font-size:7.5px;padding:4px 8px"></div>
+    <div class="c3"></div><div class="c4"></div>
+  </div>
+
+  <!-- Panel 6 bottom-right: Infra -->
+  <div class="panel" id="p-infra">
+    <div class="panel-title">⑤ OS INFRASTRUCTURE & SAAS</div>
+    <div class="panel-body" style="padding:4px 8px">
+      <div class="node-graph" id="node-graph"></div>
+      <div id="stability-verdict" style="font-size:7.5px;text-align:right;color:rgba(29,158,117,.85);margin-top:2px">S = — — INITIALIZING</div>
+    </div>
+    <div class="c3"></div><div class="c4"></div>
+  </div>
+
+  <!-- Runtime controls -->
+  <div id="p-controls">
+    <div class="ctrl-title">RUNTIME CONTROLS</div>
+    <label>Variance <span id="sv-out">4</span></label>
+    <input type="range" id="sl-variance" min="1" max="10" value="4" step="1">
+    <label>Temperature <span id="st-out">5</span></label>
+    <input type="range" id="sl-temperature" min="1" max="10" value="5" step="1">
+    <label>Sea Level <span id="ss-out">2</span></label>
+    <input type="range" id="sl-sea" min="0" max="8" value="2" step="1">
+    <button id="btn-anomaly">⚡ Inject Anomaly</button>
+    <button id="btn-merge" id="btn-merge">◈ Merge Dataset B</button>
+    <button id="btn-pause">⏸ Pause</button>
+    <div style="margin-top:6px;font-size:7px;color:rgba(0,185,155,.5);border-top:.5px solid rgba(0,175,148,.2);padding-top:5px" id="ctrl-tick">TICK 00000</div>
+  </div>
+
+  <!-- Status bar -->
+  <div id="status-bar">GEO-LATENT SPATIAL DATA-OS  v3.0</div>
+  <div id="tooltip"></div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+/* ============================================================
+   GEO-LATENT v3.0 — Full 3D Viewer
+   Connects to the Python API at /frame, /scene, /ws
+   Falls back to a standalone simulation when API is offline
+   ============================================================ */
+'use strict';
+
+const API_BASE = window.location.origin;
+let paused = false, mergeMode = false, tick = 0;
+let entH = Array(60).fill(1.5), energyH = Array(40).fill(0.5), siphH = Array(40).fill(0.3);
+let cEvts = [], cIdx = 0;
+const CAEL_DOM = [
+  {d:'GENOMICS',  c:'#1D9E75', m:'Oncogenic mutation spike. Nucleotide drift detected.'},
+  {d:'FINTECH',   c:'#BA7517', m:'Flash crash event. Market liquidity void emerging.'},
+  {d:'SMART CITY',c:'#3878CC', m:'Urban flow bottleneck. Grid cascade failure.'},
+  {d:'SYSTEM',    c:'#7F77DD', m:'NCA healing — data gap sealed at sector.'},
+  {d:'GENOMICS',  c:'#1D9E75', m:'CRISPR anomaly seq-3 flagged. Drift confirmed.'},
+  {d:'FINTECH',   c:'#BA7517', m:'Volatility spike. Entropy lightning imminent.'},
+];
+cEvts = CAEL_DOM.slice(0,3);
+
+/* ── Three.js setup ─────────────────────────────────────── */
+const canvas = document.getElementById('canvas');
+const renderer = new THREE.WebGLRenderer({canvas, antialias:true});
+renderer.setPixelRatio(Math.min(window.devicePixelRatio,2));
+renderer.setClearColor(0x050912);
+
+const scene3 = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(45, 1, 0.01, 100);
+camera.position.set(0.5, 1.2, 1.8);
+camera.lookAt(0.5, 0, 0.5);
+
+/* Lights */
+scene3.add(new THREE.AmbientLight(0x001a14, 2));
+const dLight = new THREE.DirectionalLight(0x00ffd4, 1.2);
+dLight.position.set(1, 2, 1);
+scene3.add(dLight);
+const pLight = new THREE.PointLight(0x7f77dd, 2, 1.5);
+pLight.position.set(0.65, 0.3, 0.35);
+scene3.add(pLight);
+
+/* Terrain geometry (will be rebuilt from API data) */
+const COLS = 40, ROWS = 24;
+let terrainMesh = null, wireMesh = null;
+let currentTerrain = null; // flat array [ROWS][COLS]
+
+function buildTerrainMesh(heightData) {
+  if (terrainMesh) { scene3.remove(terrainMesh); scene3.remove(wireMesh); }
+
+  const geo = new THREE.PlaneGeometry(1, 1, COLS-1, ROWS-1);
+  geo.rotateX(-Math.PI/2);
+  const pos = geo.attributes.position;
+
+  let max = 0;
+  for (let i = 0; i < heightData.length; i++) max = Math.max(max, heightData[i]);
+  max = max || 1;
+
+  for (let i = 0; i < pos.count; i++) {
+    const h = (heightData[i] || 0) / max * 0.38;
+    pos.setY(i, h);
+  }
+  pos.needsUpdate = true;
+  geo.computeVertexNormals();
+
+  // Colour vertices
+  const col = new Float32Array(pos.count * 3);
+  const anomThresh = 0.28;
+  for (let i = 0; i < pos.count; i++) {
+    const h = pos.getY(i) / 0.38;
+    const anom = h > anomThresh;
+    if (anom) {
+      col[i*3]   = 0.7 + 0.3*h; col[i*3+1] = 0.12; col[i*3+2] = 0.02;
+    } else {
+      col[i*3]   = 0.01 + 0.06*h;
+      col[i*3+1] = 0.25 + 0.55*h;
+      col[i*3+2] = 0.35 + 0.46*h;
+    }
+  }
+  geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+
+  const mat = new THREE.MeshPhongMaterial({vertexColors:true, shininess:18, side:THREE.FrontSide});
+  terrainMesh = new THREE.Mesh(geo, mat);
+  scene3.add(terrainMesh);
+
+  // Wireframe
+  const wmat = new THREE.LineBasicMaterial({color:0x00d4b4, transparent:true, opacity:0.18});
+  wireMesh = new THREE.LineSegments(new THREE.WireframeGeometry(geo), wmat);
+  scene3.add(wireMesh);
+}
+
+/* Sea plane */
+const seaGeo = new THREE.PlaneGeometry(1.2, 1.2);
+seaGeo.rotateX(-Math.PI/2);
+const seaMat = new THREE.MeshPhongMaterial({color:0x001e18, transparent:true, opacity:0.55, shininess:60});
+const seaMesh = new THREE.Mesh(seaGeo, seaMat);
+seaMesh.position.set(0.5, 0.02, 0.5);
+scene3.add(seaMesh);
+
+/* Observer beam */
+const beamGeo = new THREE.CylinderGeometry(0.003, 0.018, 0.5, 8, 1, true);
+const beamMat = new THREE.MeshBasicMaterial({color:0x00ffdc, transparent:true, opacity:0.35, side:THREE.DoubleSide});
+const beam    = new THREE.Mesh(beamGeo, beamMat);
+beam.position.set(0.3, 0.3, 0.3);
+scene3.add(beam);
+
+/* Event horizon rings (anomaly zone) */
+const rings = [];
+for (let i = 0; i < 4; i++) {
+  const rg = new THREE.TorusGeometry(0.06 + i*0.04, 0.003, 6, 48);
+  const rm = new THREE.MeshBasicMaterial({color:0x7f77dd, transparent:true, opacity:0.5 - i*0.1});
+  const r  = new THREE.Mesh(rg, rm);
+  r.position.set(0.65, 0.15, 0.35);
+  r.rotation.x = Math.PI/2;
+  scene3.add(r);
+  rings.push(r);
+}
+
+/* Ghost geometry (floating wireframe shapes) */
+const ghosts = [];
+for (let g = 0; g < 2; g++) {
+  const gg = new THREE.IcosahedronGeometry(0.04 + g*0.02, 0);
+  const gm = new THREE.MeshBasicMaterial({color:0x00c8b4, wireframe:true, transparent:true, opacity:0.22});
+  const gm_ = new THREE.Mesh(gg, gm);
+  gm_.position.set(0.55 + g*0.22, 0.62 - g*0.1, 0.38 + g*0.18);
+  scene3.add(gm_);
+  ghosts.push(gm_);
+}
+
+/* Entropy lightning bolts */
+let lightningLines = [], lightningAge = [];
+function spawnLightning() {
+  for (let i = 0; i < 3; i++) {
+    const pts = [];
+    let x = Math.random(), y = 0.3 + Math.random()*0.3, z = Math.random();
+    pts.push(new THREE.Vector3(x, y, z));
+    for (let s = 0; s < 5; s++) {
+      x += (Math.random()-.5)*.1; y -= .04 + Math.random()*.04; z += (Math.random()-.5)*.1;
+      pts.push(new THREE.Vector3(Math.max(0,Math.min(1,x)), Math.max(0,y), Math.max(0,Math.min(1,z))));
+    }
+    const lg = new THREE.BufferGeometry().setFromPoints(pts);
+    const lm = new THREE.LineBasicMaterial({color:0xfac775, transparent:true, opacity:0.85});
+    const ll = new THREE.Line(lg, lm);
+    scene3.add(ll);
+    lightningLines.push(ll);
+    lightningAge.push(0);
+  }
+}
+
+/* Standalone physics (used when API is offline) */
+function ns(x,y,t){ return Math.sin(x*.4+y*.3+t*.018)*.45+Math.sin(x*.9-y*.6+t*.013)*.3+Math.sin(x*1.6+y*1.2-t*.009)*.15; }
+
+function genTerrain(t) {
+  const flat = new Float32Array(ROWS * COLS);
+  const vari = parseInt(document.getElementById('sl-variance').value) / 10 * 2.5;
+  for (let r = 0; r < ROWS; r++) {
+    for (let c = 0; c < COLS; c++) {
+      let v = ns(c/COLS*4, r/ROWS*4, t) * vari + 1.8;
+      const dc = c/COLS - 0.65, dr = r/ROWS - 0.35;
+      if (dc*dc/0.04 + dr*dr/0.03 < 1) v = 3.8 + ns(c,r,t*2)*.9;
+      flat[r*COLS + c] = Math.max(0, v);
+    }
+  }
+  return flat;
+}
+
+/* ── API polling ─────────────────────────────────────────── */
+let apiOnline = false, wsConn = null, pollInterval = null;
+
+async function pollAPI() {
+  try {
+    const r = await fetch(API_BASE + '/frame', {
+      headers:{'X-Tenant-Id':'demo','X-Principal-Id':'viewer','X-Role':'viewer'},
+      signal: AbortSignal.timeout(2000)
+    });
+    if (!r.ok) throw new Error('not ok');
+    const data = await r.json();
+    if (!apiOnline) { apiOnline = true; loadingMsg('API connected — live data active'); }
+    applyFrame(data);
+  } catch(e) {
+    apiOnline = false;
+  }
+}
+
+function applyFrame(data) {
+  if (data.sea_level !== undefined) seaMesh.position.y = Math.max(0.005, data.sea_level * 0.38);
+  document.getElementById('ctrl-tick').textContent = 'TICK ' + String(data.step||0).padStart(5,'0');
+  updateEntropy(data.entropy || (1.5 + Math.random()*.3));
+  updateSiphon(data.energy_flux||0.55, data.siphon_deviation||0.3, data.bias_control||0.7);
+  updateStability(data.stability_index||0.8, data.verdict||'Transitional State');
+  updateMapperStats(data.active||0, data.abyss||0, data.atmosphere||0);
+}
+
+async function fetchScene() {
+  try {
+    const r = await fetch(API_BASE + '/scene', {
+      headers:{'X-Tenant-Id':'demo','X-Principal-Id':'viewer','X-Role':'viewer'},
+      signal: AbortSignal.timeout(3000)
+    });
+    if (!r.ok) return;
+    const sc = await r.json();
+    if (sc.vertices && sc.vertices.length) {
+      // Build flat array from vertices Y channel
+      const flat = new Float32Array(ROWS*COLS);
+      const verts = sc.vertices;
+      const n = Math.min(verts.length, ROWS*COLS);
+      for (let i = 0; i < n; i++) flat[i] = (verts[i][1] || 0) * 5;
+      buildTerrainMesh(flat);
+    }
+  } catch(e) {}
+}
+
+/* ── Standalone simulation (offline mode) ──────────────── */
+let localTick = 0;
+function localStep() {
+  if (paused) return;
+  localTick++;
+  const flat = genTerrain(localTick);
+  buildTerrainMesh(flat);
+
+  const entropy = 1.5 + Math.sin(localTick*.04)*1.1 + Math.sin(localTick*.11)*.5;
+  updateEntropy(entropy);
+  updateSiphon(0.4+Math.sin(localTick*.06)*.28, 0.22+Math.sin(localTick*.09)*.18, 0.6+Math.sin(localTick*.025)*.2);
+  updateStability(0.75+Math.sin(localTick*.02)*.15, null);
+  updateMapperStats(20+Math.round(Math.sin(localTick*.1)*5), 8, 3);
+
+  seaMesh.position.y = (parseInt(document.getElementById('sl-sea').value)/8)*0.12 + 0.005;
+
+  if (entropy > 2.9 && Math.random() < .025) spawnLightning();
+
+  if (localTick % 120 === 0) {
+    cEvts.push(CAEL_DOM[cIdx % CAEL_DOM.length]); cIdx++;
+    if (cEvts.length > 6) cEvts.shift();
+    renderCael();
+    appendChronicle(cEvts[cEvts.length-1]);
+  }
+
+  document.getElementById('ctrl-tick').textContent = 'TICK ' + String(localTick).padStart(5,'0');
+}
+
+/* ── HUD update functions ───────────────────────────────── */
+function updateEntropy(h) {
+  entH.push(h); if (entH.length > 70) entH.shift();
+  const hot = h > 2.7;
+  document.getElementById('entropy-label').style.color = hot ? 'rgba(215,88,48,.9)' : 'rgba(186,117,23,.85)';
+  document.getElementById('entropy-label').textContent = `H(X) = ${h.toFixed(2)}   ${hot ? '⚡ CRITICAL' : '● NOMINAL'}`;
+  drawMiniChart('entropy-chart', entH, hot ? '#D85A30' : '#BA7517');
+}
+
+function updateSiphon(energy, siphon, bias) {
+  energyH.push(energy); if (energyH.length > 50) energyH.shift();
+  siphH.push(siphon);   if (siphH.length > 50)   siphH.shift();
+  const pct = v => Math.round(Math.min(1, Math.max(0, v)) * 100);
+  document.getElementById('bar-energy').style.width = pct(energy) + '%';
+  document.getElementById('bar-siphon').style.width = pct(siphon) + '%';
+  document.getElementById('bar-bias').style.width   = pct(bias)   + '%';
+  document.getElementById('bv-energy').textContent  = pct(energy) + '%';
+  document.getElementById('bv-siphon').textContent  = pct(siphon) + '%';
+  document.getElementById('bv-bias').textContent    = pct(bias)   + '%';
+  drawMiniChart('siphon-chart', siphH, '#7F77DD');
+}
+
+function updateStability(S, verdict) {
+  const v = verdict || (S > 0.7 ? 'Stabilized Manifold' : S < 0.4 ? 'Systemic Collapse' : 'Transitional State');
+  const c = S > 0.7 ? 'rgba(29,158,117,.85)' : S < 0.4 ? 'rgba(215,88,48,.85)' : 'rgba(186,117,23,.85)';
+  document.getElementById('stability-verdict').style.color = c;
+  document.getElementById('stability-verdict').textContent = `S = ${S.toFixed(3)} — ${v.toUpperCase()}`;
+}
+
+function updateMapperStats(active, abyss, atmos) {
+  document.getElementById('mapper-stats').textContent = `active: ${active} | abyss: ${abyss} | atmos: ${atmos}`;
+}
+
+function drawMiniChart(id, data, color) {
+  const cv = document.getElementById(id);
+  if (!cv) return;
+  const w = cv.offsetWidth || 140, h = cv.offsetHeight || 34;
+  cv.width = w; cv.height = h;
+  const ctx = cv.getContext('2d');
+  ctx.clearRect(0, 0, w, h);
+  if (data.length < 2) return;
+  const mn = Math.min(...data), mx = Math.max(...data) || 1;
+  const pts = data.map((v,i) => ({x: i/(data.length-1)*w, y: h - ((v-mn)/(mx-mn||1))*h}));
+  ctx.beginPath(); pts.forEach((p,i) => i ? ctx.lineTo(p.x,p.y) : ctx.moveTo(p.x,p.y));
+  ctx.strokeStyle = color; ctx.lineWidth = 1.2; ctx.stroke();
+  ctx.lineTo(pts[pts.length-1].x, h); ctx.lineTo(pts[0].x, h); ctx.closePath();
+  ctx.fillStyle = color + '18'; ctx.fill();
+}
+
+function renderCael() {
+  const body = document.getElementById('cael-body');
+  body.innerHTML = '';
+  cEvts.slice(-3).forEach(ev => {
+    const row = document.createElement('div'); row.className = 'cael-row';
+    const badge = document.createElement('span'); badge.className = 'cael-badge';
+    badge.style.cssText = `background:${ev.c}22;color:${ev.c};border:.5px solid ${ev.c}55`;
+    badge.textContent = ev.d;
+    const msg = document.createElement('span'); msg.className = 'cael-msg';
+    msg.textContent = ev.m.slice(0,30);
+    row.append(badge, msg); body.appendChild(row);
+  });
+}
+
+function appendChronicle(ev) {
+  const ch = document.getElementById('chronicle');
+  const p  = document.createElement('p');
+  p.style.cssText = `color:${ev.c};margin:1px 0`;
+  p.textContent   = `[${String(localTick).padStart(5,'0')}] ${ev.d}: ${ev.m}`;
+  ch.appendChild(p);
+  while (ch.children.length > 20) ch.removeChild(ch.firstChild);
+  ch.scrollTop = ch.scrollHeight;
+}
+
+/* Node graph (OS Infra panel) */
+function buildNodeGraph() {
+  const g = document.getElementById('node-graph');
+  g.innerHTML = '';
+  const nodes = [
+    {l:'JWT AUTH',   x:12, y:20}, {l:'WEBHOOK',   x:38, y:55},
+    {l:'MULTIVERSE', x:12, y:80}, {l:'APEXES',    x:65, y:20},
+    {l:'IMMORTAL',   x:88, y:55},
+  ];
+  const edges = [[0,1],[1,2],[0,3],[1,3],[1,4],[3,4],[2,4]];
+  // SVG for edges
+  const svg = document.createElementNS('http://www.w3.org/2000/svg','svg');
+  svg.style.cssText = 'position:absolute;top:0;left:0;width:100%;height:100%';
+  edges.forEach(([a,b]) => {
+    const line = document.createElementNS('http://www.w3.org/2000/svg','line');
+    const ax = nodes[a].x+'%', ay = nodes[a].y+'%', bx = nodes[b].x+'%', by = nodes[b].y+'%';
+    line.setAttribute('x1',ax); line.setAttribute('y1',ay);
+    line.setAttribute('x2',bx); line.setAttribute('y2',by);
+    line.setAttribute('stroke','rgba(0,172,150,.3)'); line.setAttribute('stroke-width','0.5');
+    svg.appendChild(line);
+  });
+  g.appendChild(svg);
+  nodes.forEach(n => {
+    const dot = document.createElement('div'); dot.className = 'node-dot';
+    dot.style.cssText += `left:${n.x}%;top:${n.y}%`;
+    const lbl = document.createElement('div'); lbl.className = 'node-lbl';
+    lbl.style.cssText = `left:${n.x}%;top:${n.y}%`;
+    lbl.textContent = n.l;
+    g.append(dot, lbl);
+  });
+}
+
+/* ── Controls ───────────────────────────────────────────── */
+document.getElementById('sl-variance').oninput = e => {
+  document.getElementById('sv-out').textContent = e.target.value;
+  sendControl('variance', parseFloat(e.target.value));
+};
+document.getElementById('sl-temperature').oninput = e => {
+  document.getElementById('st-out').textContent = e.target.value;
+  sendControl('temperature', parseFloat(e.target.value));
+};
+document.getElementById('sl-sea').oninput = e => {
+  document.getElementById('ss-out').textContent = e.target.value;
+};
+document.getElementById('btn-anomaly').onclick = () => {
+  sendControl('inject_anomaly', true);
+  cEvts.push({d:'INJECT',c:'#D85A30',m:`Manual anomaly injected — tick ${localTick}`});
+  if (cEvts.length > 8) cEvts.shift();
+  renderCael(); appendChronicle(cEvts[cEvts.length-1]);
+  spawnLightning();
+};
+document.getElementById('btn-merge').onclick = function() {
+  mergeMode = !mergeMode;
+  this.textContent = mergeMode ? '◈ Eject Dataset B' : '◈ Merge Dataset B';
+  sendControl('inflow_mode', mergeMode ? 'predator' : 'neutral');
+  const ev = {d:'SYSTEM', c:'#7F77DD', m: mergeMode ? 'Dataset B — Lotka-Volterra active.' : 'Dataset B ejected.'};
+  cEvts.push(ev); if (cEvts.length > 8) cEvts.shift();
+  renderCael(); appendChronicle(ev);
+};
+document.getElementById('btn-pause').onclick = function() {
+  paused = !paused;
+  this.textContent = paused ? '▶ Resume' : '⏸ Pause';
+  fetch(API_BASE + (paused ? '/pause' : '/resume'), {method:'POST',headers:{'X-Tenant-Id':'demo','X-Principal-Id':'viewer','X-Role':'operator'}}).catch(()=>{});
+};
+
+async function sendControl(key, value) {
+  try {
+    await fetch(API_BASE + '/controls', {
+      method:'POST',
+      headers:{'Content-Type':'application/json','X-Tenant-Id':'demo','X-Principal-Id':'viewer','X-Role':'operator'},
+      body: JSON.stringify({[key]: value}),
+    });
+  } catch(e) {}
+}
+
+/* Mouse hover on canvas → tooltip */
+const raycaster = new THREE.Raycaster();
+const mouse = new THREE.Vector2();
+const tooltip = document.getElementById('tooltip');
+canvas.addEventListener('mousemove', e => {
+  const rect = canvas.getBoundingClientRect();
+  mouse.x = ((e.clientX - rect.left) / rect.width)  * 2 - 1;
+  mouse.y = -((e.clientY - rect.top)  / rect.height) * 2 + 1;
+  raycaster.setFromCamera(mouse, camera);
+  if (terrainMesh) {
+    const hits = raycaster.intersectObject(terrainMesh);
+    if (hits.length) {
+      const p = hits[0].point;
+      const gx = Math.round(p.x * (COLS-1)), gz = Math.round(p.z * (ROWS-1));
+      const h  = p.y.toFixed(3);
+      const anom = p.y > 0.1;
+      tooltip.style.display = 'block';
+      tooltip.style.left = (e.clientX + 14) + 'px';
+      tooltip.style.top  = Math.max(0, e.clientY - 48) + 'px';
+      tooltip.innerHTML  = `CELL (${gx}, ${gz})<br>HEIGHT ${h}<br>${anom ? '⚠ ANOMALY ZONE' : '◈ KDE TERRAIN'}`;
+    } else {
+      tooltip.style.display = 'none';
+    }
+  }
+});
+canvas.addEventListener('mouseleave', () => { tooltip.style.display = 'none'; });
+
+/* ── Render loop ────────────────────────────────────────── */
+function resize() {
+  const W = window.innerWidth, H = window.innerHeight;
+  renderer.setSize(W, H);
+  camera.aspect = W / H;
+  camera.updateProjectionMatrix();
+}
+window.addEventListener('resize', resize);
+resize();
+
+let frameCount = 0;
+function animate() {
+  requestAnimationFrame(animate);
+  if (!paused) {
+    frameCount++;
+
+    // Animate event horizon rings
+    rings.forEach((r, i) => {
+      r.rotation.z += 0.008 + i * 0.003;
+      r.material.opacity = (0.5 - i*0.1) * (0.7 + 0.3*Math.sin(frameCount*0.04 + i));
+    });
+
+    // Animate ghost geometry
+    ghosts.forEach((g, i) => {
+      g.position.y += Math.sin(frameCount*0.01 + i*1.8) * 0.0008;
+      g.rotation.y += 0.006 + i*0.003;
+    });
+
+    // Animate observer beam
+    beam.material.opacity = 0.25 + 0.15*Math.sin(frameCount*0.05);
+    beam.scale.x = beam.scale.z = 1 + 0.2*Math.sin(frameCount*0.08);
+
+    // Animate lightning
+    for (let i = lightningLines.length-1; i >= 0; i--) {
+      lightningAge[i]++;
+      lightningLines[i].material.opacity = Math.max(0, 0.85 - lightningAge[i]/20);
+      if (lightningAge[i] > 25) {
+        scene3.remove(lightningLines[i]);
+        lightningLines.splice(i,1); lightningAge.splice(i,1);
+      }
+    }
+
+    // Local step (offline sim)
+    if (!apiOnline && frameCount % 3 === 0) localStep();
+  }
+
+  renderer.render(scene3, camera);
+}
+
+/* ── Initialise ─────────────────────────────────────────── */
+function loadingMsg(msg) {
+  document.getElementById('load-msg').textContent = msg;
+}
+
+async function init() {
+  loadingMsg('Building terrain...');
+  buildTerrainMesh(genTerrain(0));
+  buildNodeGraph();
+  renderCael();
+
+  loadingMsg('Connecting to observatory API...');
+  await pollAPI();
+  if (apiOnline) {
+    await fetchScene();
+    loadingMsg('Live data stream active.');
+    pollInterval = setInterval(() => { pollAPI(); }, 800);
+    setInterval(() => { if(apiOnline) fetchScene(); }, 5000);
+  } else {
+    loadingMsg('API offline — standalone simulation mode.');
+  }
+
+  // Fade loading screen
+  setTimeout(() => {
+    const ld = document.getElementById('loading');
+    ld.style.opacity = '0';
+    setTimeout(() => { ld.style.display = 'none'; }, 600);
+  }, 1200);
+
+  animate();
+}
+
+init();
+</script>
+</body>
+</html>

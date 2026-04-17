@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      GEOLATENT_JWT_SECRET: test-secret-do-not-use
+      GEOLATENT_AUDIT_SIGNING_KEY: test-audit-key
+      GEOLATENT_BUNDLE_SECRET: test-bundle-key
+      GEOLATENT_ALLOW_HEADER_DEV: "true"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run tests
+        run: pytest geolatent/tests/ -v --tb=short
+
+      - name: Syntax check all Python files
+        run: |
+          python3 -c "
+          import ast, pathlib, sys
+          errors = []
+          for p in pathlib.Path('.').rglob('*.py'):
+            if '.git' in str(p) or '__pycache__' in str(p): continue
+            try: ast.parse(p.read_text())
+            except SyntaxError as e: errors.append(f'{p}: {e}')
+          if errors:
+            [print(e) for e in errors]; sys.exit(1)
+          print(f'All Python files parse cleanly.')
+          "
