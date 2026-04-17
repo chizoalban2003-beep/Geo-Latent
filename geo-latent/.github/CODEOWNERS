@@ -1,0 +1,14 @@
+# CODEOWNERS
+# All files owned by the repo owner by default
+* @chizoalban2003-beep
+
+# Core engine — requires careful review
+geolatent/simulator.py @chizoalban2003-beep
+geolatent/engine.py    @chizoalban2003-beep
+geolatent/policy.py    @chizoalban2003-beep
+
+# Security-sensitive files
+geolatent/auth.py           @chizoalban2003-beep
+geolatent/persistence_db.py @chizoalban2003-beep
+docker-compose.yml          @chizoalban2003-beep
+.env.example                @chizoalban2003-beep

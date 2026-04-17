@@ -1,0 +1,37 @@
+# geo-latent requirements
+# Core API
+fastapi>=0.111.0
+uvicorn[standard]>=0.29.0
+python-multipart>=0.0.9
+
+# Database — async Postgres with connection pooling (fixes per-request _connect() bug)
+psycopg[async]>=3.1.19
+psycopg-pool>=3.1.9
+
+# Redis (optional — set GEOLATENT_REDIS_URL to enable)
+redis>=5.0.0
+
+# Data processing
+numpy>=1.26.0
+pandas>=2.2.0
+
+# Schema migrations
+alembic>=1.13.0
+sqlalchemy>=2.0.0
+
+# Auth / crypto (stdlib pbkdf2 used by default; install for RS256 OIDC)
+# python-jose[cryptography]>=3.3.0   # uncomment to enable full RS256 sig verification
+
+# Billing
+stripe>=9.0.0
+
+# LLM lore generation (optional — set ANTHROPIC_API_KEY)
+anthropic>=0.29.0
+
+# Testing
+pytest>=8.0.0
+pytest-asyncio>=0.23.0
+httpx>=0.27.0
+
+# Dev tools
+python-dotenv>=1.0.0
