@@ -39,7 +39,7 @@ class PolicyAgent:
     _BIAS_THRESHOLD      = 0.60    # below → raise sea level
     _STABILITY_THRESHOLD = 0.40    # below → boost temperature
     _ENTROPY_THRESHOLD   = 3.10    # above → schedule pruning
-    _EMA_ALPHA           = 0.20
+    _EMA_ALPHA           = 0.3
 
     def __init__(self, state):
         self._ema_bias      = 1.0

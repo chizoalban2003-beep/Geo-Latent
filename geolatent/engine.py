@@ -147,6 +147,35 @@ class GeolatentEngine:
             if check_hibernation(self.state):
                 break
 
+    # ── Lookahead (ghost simulation) ──────────────────────────────────────
+
+    def lookahead(self, steps: int = 3) -> dict:
+        """
+        Run a shadow copy of the simulation `steps` ticks into the future.
+        Returns a scene dict for the ghost wireframe overlay.
+        Does NOT mutate self.state.
+        """
+        import copy as _copy
+        shadow_state = _copy.deepcopy(self.state)
+        shadow_controls = _copy.copy(self._controls)
+
+        for _ in range(steps):
+            from geolatent.scenarios import generate_inflow
+            new_pts = generate_inflow(
+                shadow_state,
+                mode=shadow_controls.get("inflow_mode", "neutral"),
+                inject_anomaly=False,
+            )
+            tick(
+                shadow_state,
+                new_points=new_pts,
+                obs_x=float(shadow_controls.get("observer_x",      0.5)),
+                obs_y=float(shadow_controls.get("observer_y",      0.5)),
+                obs_radius=float(shadow_controls.get("observer_radius", 0.1)),
+            )
+
+        return build_scene(shadow_state)
+
     # ── Frame / Scene / Report ────────────────────────────────────────────
 
     def current_frame(self) -> dict:

@@ -193,24 +193,9 @@ def compute_biome_map(terrain, grid_w: int, grid_h: int) -> dict:
 
 def apply_lotka_volterra(state: WorldState, alpha=1.1, beta=0.4,
                           delta=0.1, gamma=0.4, dt=0.05) -> None:
-    """
-    Modifies point energies in-place to simulate competitive terrain erosion.
-    prey: dx/dt  = alpha*x  - beta*x*y
-    pred: dy/dt  = delta*x*y - gamma*y
-    """
-    prey  = [p for p in state.active if p.kind == "prey"]
-    pred  = [p for p in state.active if p.kind == "predator"]
-
-    x = sum(p.energy for p in prey)  / max(1, len(prey))
-    y = sum(p.energy for p in pred)  / max(1, len(pred))
-
-    dx = (alpha * x - beta  * x * y) * dt
-    dy = (delta * x * y - gamma * y) * dt
-
-    for p in prey:
-        p.energy = max(0.01, p.energy + dx)
-    for p in pred:
-        p.energy = max(0.01, p.energy + dy)
+    """Delegates to collision.py — Lotka-Volterra predator-prey step."""
+    from geolatent.collision import apply_lotka_volterra as _lv
+    _lv(state, alpha=alpha, beta=beta, delta=delta, gamma=gamma, dt=dt)
 
 
 # ---------------------------------------------------------------------------
@@ -299,47 +284,13 @@ def apply_carrying_capacity(state: WorldState) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Immortal cell detection (Fossil Tracking)
+# Immortal cell detection — delegated to genealogy.py
 # ---------------------------------------------------------------------------
 
-def update_immortal_candidates(state: WorldState, terrain, sigma_band: float = 1.0) -> None:
-    """
-    If a cell stays within 1σ density range for 2000 consecutive ticks,
-    it is etched as an Immortal Cell.
-    """
-    if not terrain:
-        return
-
-    rows = len(terrain)
-    cols = len(terrain[0]) if rows else 0
-    if rows == 0 or cols == 0:
-        return
-
-    # Flatten for stats
-    flat = []
-    for row in terrain:
-        for v in (row if isinstance(row, list) else row.tolist()):
-            flat.append(v)
-    if not flat:
-        return
-
-    mu = sum(flat) / len(flat)
-    sigma = math.sqrt(sum((v - mu) ** 2 for v in flat) / len(flat)) or 1.0
-    lo, hi = mu - sigma_band * sigma, mu + sigma_band * sigma
-
-    for gy in range(rows):
-        for gx in range(cols):
-            v = terrain[gy][gx] if isinstance(terrain[gy], list) else float(terrain[gy][gx])
-            key = (gx, gy)
-            if lo <= v <= hi:
-                state.immortal_candidates[key] = state.immortal_candidates.get(key, 0) + 1
-            else:
-                state.immortal_candidates.pop(key, None)
-
-
-def get_immortal_cells_local(state: WorldState, threshold: int = 2000) -> list:
-    return [{"gx": k[0], "gy": k[1], "ticks": v}
-            for k, v in state.immortal_candidates.items() if v >= threshold]
+from geolatent.genealogy import (          # noqa: E402
+    update_immortal_candidates,
+    get_immortal_cells_local,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -358,6 +309,100 @@ def apply_observer(state: WorldState, obs_x: float, obs_y: float,
             pt.energy = min(5.0, pt.energy * (1 + pressure * (1 - dist / radius)))
         else:
             pt.energy = max(0.01, pt.energy * (1 - pressure * 0.01))
+
+
+# ---------------------------------------------------------------------------
+# Observer terrain deformation
+# ---------------------------------------------------------------------------
+
+def _apply_observer_depression(state: WorldState, obs_x: float, obs_y: float,
+                                radius: float, depth: float = 0.08) -> None:
+    """
+    Gaussian depression on terrain surface at observer position.
+    Directly deforms the height field — not just point energies.
+    Terrain is always list-of-lists at this call site (post synthesize_topology).
+    """
+    if not state.terrain:
+        return
+    W, H = state.grid_w, state.grid_h
+    px, py = obs_x * W, obs_y * H
+    sigma_px = max(1.0, radius * W)
+    rows = state.terrain
+    for gy in range(H):
+        row = rows[gy]
+        is_list = isinstance(row, list)
+        for gx in range(W):
+            dx = (gx - px) / sigma_px
+            dy = (gy - py) / sigma_px
+            g = math.exp(-0.5 * (dx * dx + dy * dy))
+            v = row[gx] if is_list else float(row[gx])
+            new_v = max(0.0, v - depth * g)
+            if is_list:
+                row[gx] = new_v
+            else:
+                rows[gy][gx] = new_v
+
+
+# ---------------------------------------------------------------------------
+# Gravity well inversion (anomaly cells → negative depth canyons)
+# ---------------------------------------------------------------------------
+
+# 5×5 Gaussian falloff kernel (σ=1.0, offsets -2..+2)
+_GRAVITY_KERNEL: dict = {
+    (dr, dc): math.exp(-0.5 * (dr * dr + dc * dc))
+    for dr in range(-2, 3)
+    for dc in range(-2, 3)
+}
+_GRAVITY_FALLOFF_STRENGTH = 0.08  # neighbor pull-down fraction
+
+
+def apply_gravity_well_inversion(state: WorldState) -> None:
+    """
+    Cells exceeding μ+3σ are inverted to negative depth proportional to excess.
+    Neighbouring cells within a 5×5 window receive a Gaussian falloff blend.
+    This renders as glowing purple gravity-well canyons in the viewer.
+    """
+    if not state.terrain:
+        return
+    rows = state.terrain
+    H = len(rows)
+    W = len(rows[0]) if H else 0
+    if H == 0 or W == 0:
+        return
+
+    flat = [rows[gy][gx] if isinstance(rows[gy], list) else float(rows[gy][gx])
+            for gy in range(H) for gx in range(W)]
+    mu    = sum(flat) / len(flat)
+    sigma = math.sqrt(sum((v - mu) ** 2 for v in flat) / len(flat)) or 1.0
+    threshold = mu + 3 * sigma
+
+    # Collect anomaly cells
+    anomalies: dict = {}
+    for gy in range(H):
+        for gx in range(W):
+            v = rows[gy][gx] if isinstance(rows[gy], list) else float(rows[gy][gx])
+            if v > threshold:
+                anomalies[(gy, gx)] = -(v - threshold)   # inverted depth
+
+    if not anomalies:
+        return
+
+    # Work on a mutable copy so we don't re-read already-inverted values
+    new_rows = [list(r) if isinstance(r, list) else [float(r[c]) for c in range(W)]
+                for r in rows]
+
+    for (gy, gx), inv_val in anomalies.items():
+        new_rows[gy][gx] = inv_val
+        excess = abs(inv_val)
+        for (dr, dc), weight in _GRAVITY_KERNEL.items():
+            ny, nx = gy + dr, gx + dc
+            if 0 <= ny < H and 0 <= nx < W and (ny, nx) not in anomalies:
+                new_rows[ny][nx] = max(
+                    -excess,
+                    new_rows[ny][nx] - weight * excess * _GRAVITY_FALLOFF_STRENGTH,
+                )
+
+    state.terrain = new_rows
 
 
 # ---------------------------------------------------------------------------
@@ -397,6 +442,12 @@ def tick(state: WorldState, new_points: Optional[List[DataPoint]] = None,
 
     # 7. KDE terrain synthesis  ← the numpy-fixed path
     state.terrain = synthesize_topology(state)
+
+    # 7b. Observer Gaussian depression on terrain surface
+    _apply_observer_depression(state, obs_x, obs_y, obs_radius)
+
+    # 7c. Gravity well inversion — anomaly peaks become canyons
+    apply_gravity_well_inversion(state)
 
     # 8. Biome labeling (every 10 steps to save compute)
     if state.step % 10 == 0:

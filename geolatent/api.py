@@ -236,6 +236,19 @@ async def get_scene(request: Request, auth: dict = Depends(get_auth)):
     return engine.current_scene()
 
 
+@app.get("/frame/lookahead", tags=["simulation"])
+async def get_lookahead(
+    request: Request,
+    steps: int = 3,
+    auth: dict = Depends(get_auth),
+):
+    """Ghost lookahead: shadow-simulate N steps and return the projected scene."""
+    import asyncio
+    engine = get_engine(request)
+    scene = await asyncio.to_thread(engine.lookahead, steps)
+    return {"lookahead_steps": steps, "scene": scene}
+
+
 @app.get("/report", tags=["simulation"])
 async def get_report(request: Request, auth: dict = Depends(get_auth)):
     engine = get_engine(request)
@@ -861,6 +874,16 @@ def _include_expansion_routers():
     try:
         from geolatent.biome_lore import router as biome_router
         app.include_router(biome_router,     prefix="/biomes",    tags=["biomes"])
+    except ImportError:
+        pass
+    try:
+        from geolatent.cael import router as cael_router
+        app.include_router(cael_router, prefix="/cael", tags=["cael"])
+    except ImportError:
+        pass
+    try:
+        from geolatent.performance import router as perf_router
+        app.include_router(perf_router, prefix="/performance", tags=["performance"])
     except ImportError:
         pass
 

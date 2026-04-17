@@ -158,6 +158,7 @@ canvas.mini{width:100%;height:36px;display:block}
     <button id="btn-anomaly">⚡ Inject Anomaly</button>
     <button id="btn-merge" id="btn-merge">◈ Merge Dataset B</button>
     <button id="btn-pause">⏸ Pause</button>
+    <button id="btn-audio">♪ Audio OFF</button>
     <div style="margin-top:6px;font-size:7px;color:rgba(0,185,155,.5);border-top:.5px solid rgba(0,175,148,.2);padding-top:5px" id="ctrl-tick">TICK 00000</div>
   </div>
 
@@ -303,6 +304,70 @@ for (let g = 0; g < 2; g++) {
   ghosts.push(gm_);
 }
 
+/* Plasma cones — purple gravity-well anomaly markers (rebuilt each update) */
+let plasmaCones = [];
+function updatePlasmaCones(anomalies) {
+  plasmaCones.forEach(c => scene3.remove(c));
+  plasmaCones = [];
+  if (!anomalies || !anomalies.length) return;
+  const cols = terrainCols || COLS, rows = terrainRows || ROWS;
+  anomalies.forEach(a => {
+    const x = (a.gx / Math.max(1, cols - 1));
+    const z = (a.gy / Math.max(1, rows - 1));
+    const h = (a.value || 0.3) / 5 * 0.38;
+    const coneGeo = new THREE.ConeGeometry(0.012, 0.06, 6);
+    const coneMat = new THREE.MeshBasicMaterial({
+      color: 0x9966ff, transparent: true, opacity: 0.65
+    });
+    const cone = new THREE.Mesh(coneGeo, coneMat);
+    cone.position.set(x, h + 0.04, z);
+    scene3.add(cone);
+    plasmaCones.push(cone);
+  });
+}
+
+/* Ghost lookahead — translucent blue wireframe from /frame/lookahead */
+let ghostTerrainMesh = null;
+function buildGhostTerrain(heightData, cols, rows) {
+  if (ghostTerrainMesh) scene3.remove(ghostTerrainMesh);
+  const geo = new THREE.PlaneGeometry(1, 1, cols-1, rows-1);
+  geo.rotateX(-Math.PI/2);
+  geo.translate(0.5, 0, 0.5);
+  const pos = geo.attributes.position;
+  let max = 0;
+  for (let i = 0; i < heightData.length; i++) max = Math.max(max, heightData[i]);
+  max = max || 1;
+  for (let i = 0; i < pos.count; i++) pos.setY(i, (heightData[i] || 0) / max * 0.38);
+  pos.needsUpdate = true;
+  const mat = new THREE.MeshBasicMaterial({color:0x4488ff, wireframe:true, transparent:true, opacity:0.15});
+  ghostTerrainMesh = new THREE.Mesh(geo, mat);
+  scene3.add(ghostTerrainMesh);
+}
+
+async function fetchLookahead() {
+  if (!apiOnline) return;
+  try {
+    const r = await fetch(API_BASE + '/frame/lookahead?steps=3', {
+      headers:{'X-Tenant-Id':'demo','X-Principal-Id':'viewer','X-Role':'viewer'},
+      signal: AbortSignal.timeout(4000)
+    });
+    if (!r.ok) return;
+    const data = await r.json();
+    const sc = data.scene;
+    if (sc && sc.vertices && sc.vertices.length) {
+      const srvCols = sc.grid_w || COLS, srvRows = sc.grid_h || ROWS;
+      const flat = new Float32Array(srvRows * srvCols);
+      sc.vertices.forEach(v => {
+        const col = Math.round(v[0] * (srvCols-1));
+        const row = Math.round(v[2] * (srvRows-1));
+        if (row >= 0 && row < srvRows && col >= 0 && col < srvCols)
+          flat[row * srvCols + col] = v[1] * 5;
+      });
+      buildGhostTerrain(flat, srvCols, srvRows);
+    }
+  } catch(e) {}
+}
+
 /* Entropy lightning bolts */
 let lightningLines = [], lightningAge = [];
 function spawnLightning() {
@@ -377,6 +442,7 @@ function applyFrame(data) {
   updateSiphon(data.energy_flux||0.55, data.siphon_deviation||0.3, data.bias_control||0.7);
   updateStability(data.stability_index||0.8, data.verdict||'Transitional State');
   updateMapperStats(data.active||0, data.abyss||0, data.atmosphere||0);
+  updatePlasmaCones(data.anomalies || []);
 }
 
 async function fetchScene() {
@@ -441,6 +507,7 @@ function updateEntropy(h) {
   document.getElementById('entropy-label').style.color = hot ? 'rgba(215,88,48,.9)' : 'rgba(186,117,23,.85)';
   document.getElementById('entropy-label').textContent = `H(X) = ${h.toFixed(2)}   ${hot ? '⚡ CRITICAL' : '● NOMINAL'}`;
   drawMiniChart('entropy-chart', entH, hot ? '#D85A30' : '#BA7517');
+  updateAudioEntropy(h);
 }
 
 function updateSiphon(energy, siphon, bias) {
@@ -538,6 +605,57 @@ function buildNodeGraph() {
     g.append(dot, lbl);
   });
 }
+
+/* ── Web Audio API — entropy-modulated oscillator ───────── */
+let audioCtx = null, oscillator = null, gainNode = null, audioEnabled = false;
+
+function initAudio() {
+  if (audioCtx) return;
+  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  gainNode = audioCtx.createGain();
+  gainNode.gain.value = 0.0;
+  gainNode.connect(audioCtx.destination);
+
+  oscillator = audioCtx.createOscillator();
+  oscillator.type = 'sine';
+  oscillator.frequency.value = 55;
+  oscillator.connect(gainNode);
+  oscillator.start();
+
+  // White noise layer
+  const bufferSize = audioCtx.sampleRate * 2;
+  const noiseBuffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
+  const data = noiseBuffer.getChannelData(0);
+  for (let i = 0; i < bufferSize; i++) data[i] = Math.random() * 2 - 1;
+  const noiseSource = audioCtx.createBufferSource();
+  noiseSource.buffer = noiseBuffer;
+  noiseSource.loop = true;
+  const noiseGain = audioCtx.createGain();
+  noiseGain.gain.value = 0.018;
+  noiseSource.connect(noiseGain);
+  noiseGain.connect(gainNode);
+  noiseSource.start();
+}
+
+function updateAudioEntropy(h) {
+  if (!audioEnabled || !oscillator) return;
+  // Map entropy [0, 4] → frequency [55, 165] Hz
+  const freq = 55 + Math.min(1, Math.max(0, h / 4)) * 110;
+  oscillator.frequency.setTargetAtTime(freq, audioCtx.currentTime, 0.3);
+  gainNode.gain.setTargetAtTime(0.12, audioCtx.currentTime, 0.2);
+}
+
+document.getElementById('btn-audio').onclick = function() {
+  audioEnabled = !audioEnabled;
+  this.textContent = audioEnabled ? '♪ Audio ON' : '♪ Audio OFF';
+  if (audioEnabled) {
+    initAudio();
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+    gainNode && gainNode.gain.setTargetAtTime(0.12, audioCtx.currentTime, 0.2);
+  } else {
+    gainNode && gainNode.gain.setTargetAtTime(0.0, audioCtx.currentTime, 0.3);
+  }
+};
 
 /* ── Controls ───────────────────────────────────────────── */
 document.getElementById('sl-variance').oninput = e => {
@@ -641,6 +759,12 @@ function animate() {
       g.rotation.y += 0.006 + i*0.003;
     });
 
+    // Animate plasma cones — pulsing opacity
+    plasmaCones.forEach((c, i) => {
+      c.material.opacity = 0.4 + 0.3 * Math.sin(frameCount * 0.05 + i * 0.8);
+      c.position.y += Math.sin(frameCount * 0.03 + i) * 0.0003;
+    });
+
     // Animate observer beam
     beam.material.opacity = 0.25 + 0.15*Math.sin(frameCount*0.05);
     beam.scale.x = beam.scale.z = 1 + 0.2*Math.sin(frameCount*0.08);
@@ -681,6 +805,7 @@ async function init() {
     loadingMsg('Live data stream active.');
     pollInterval = setInterval(() => { pollAPI(); }, 800);
     setInterval(() => { if(apiOnline) fetchScene(); }, 5000);
+    setInterval(() => { if(apiOnline) fetchLookahead(); }, 5000);
   } else {
     loadingMsg(
       `API offline — standalone simulation.  ` +

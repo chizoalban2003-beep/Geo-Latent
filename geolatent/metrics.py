@@ -29,7 +29,7 @@ def _shannon_entropy(values: list[float]) -> float:
     return round(h, 4)
 
 
-def _ema(current: float, previous: float, alpha: float = 0.2) -> float:
+def _ema(current: float, previous: float, alpha: float = 0.3) -> float:
     """EMA_t = α·p_t + (1−α)·EMA_{t-1}"""
     return round(alpha * current + (1 - alpha) * previous, 4)
 
@@ -80,12 +80,9 @@ def compute_report(state, frame: dict, interventions: list) -> dict:
         min(1.0, max(0.0, cumulative_roi / total_entropy)), 4
     ) if state.step else 0.75
 
-    # Immortal cells
-    immortal = [
-        {"gx": k[0], "gy": k[1], "ticks": v}
-        for k, v in state.immortal_candidates.items()
-        if v >= 2000
-    ]
+    # Immortal cells — use canonical threshold from genealogy (≥1000 ticks)
+    from geolatent.genealogy import get_immortal_cells
+    immortal = get_immortal_cells(state)
 
     # Energy flux — ratio of active to total pool size
     total_pool = max(1, len(state.active) + len(state.abyss) + len(state.atmosphere))
