@@ -507,3 +507,207 @@ class TestAdapters:
         batches = list(iter_batches(pts, batch_size=20))
         assert len(batches) == 3
         assert sum(len(b) for b in batches) == 55
+
+
+# =============================================================================
+# CAEL — Contextual AI Event Layer
+# =============================================================================
+
+class TestCael:
+    def test_themes_list(self):
+        from geolatent.cael import THEMES
+        assert set(THEMES) == {"genomics", "finance", "void", "smart_city"}
+
+    def test_translate_known_token(self):
+        from geolatent.cael import translate
+        assert translate("active", "genomics")   == "expressed_genes"
+        assert translate("active", "finance")    == "open_positions"
+        assert translate("active", "void")       == "astral_entities"
+        assert translate("active", "smart_city") == "active_sensors"
+
+    def test_translate_unknown_token_passthrough(self):
+        from geolatent.cael import translate
+        assert translate("nonexistent_token", "genomics") == "nonexistent_token"
+
+    def test_translate_unknown_theme_passthrough(self):
+        from geolatent.cael import translate
+        assert translate("active", "unknown_theme") == "active"
+
+    def test_translate_frame(self):
+        from geolatent.cael import translate_frame
+        frame = {"active": 10, "abyss": 2, "step": 5}
+        out = translate_frame(frame, "void")
+        assert "astral_entities"         in out
+        assert "collapsed_singularities" in out
+        assert out["step"] == 5   # non-vocab key passes through unchanged
+
+    def test_all_themes_have_16_tokens(self):
+        from geolatent.cael import _VOCAB
+        for theme, vocab in _VOCAB.items():
+            assert len(vocab) == 16, f"{theme} has {len(vocab)} tokens, expected 16"
+
+
+# =============================================================================
+# Collision — Lotka-Volterra module
+# =============================================================================
+
+class TestCollision:
+    def _make_pools(self, n_prey=10, n_pred=5):
+        from geolatent.simulator import DataPoint
+        prey = [DataPoint(x=0.3, y=0.5, energy=1.0, kind="prey") for _ in range(n_prey)]
+        pred = [DataPoint(x=0.7, y=0.5, energy=1.5, kind="predator") for _ in range(n_pred)]
+        return prey, pred
+
+    def test_lv_step_returns_floats(self):
+        from geolatent.collision import lotka_volterra_step
+        prey, pred = self._make_pools()
+        dx, dy = lotka_volterra_step(prey, pred)
+        assert isinstance(dx, float)
+        assert isinstance(dy, float)
+
+    def test_lv_step_changes_energy(self):
+        from geolatent.collision import lotka_volterra_step
+        prey, pred = self._make_pools()
+        dx, dy = lotka_volterra_step(prey, pred)
+        assert dx != 0.0 or dy != 0.0
+
+    def test_apply_lv_mutates_state(self):
+        from geolatent.simulator import WorldState
+        from geolatent.collision import apply_lotka_volterra
+        state = WorldState()
+        prey, pred = self._make_pools()
+        state.active = prey + pred
+        before = sum(p.energy for p in state.active if p.kind == "prey")
+        apply_lotka_volterra(state)
+        after = sum(p.energy for p in state.active if p.kind == "prey")
+        assert before != after
+
+    def test_run_collision_returns_trace(self):
+        from geolatent.simulator import WorldState, DataPoint
+        from geolatent.collision import run_collision
+        wa, wb = WorldState(), WorldState()
+        wa.active = [DataPoint(x=0.3, y=0.5, energy=1.0, kind="prey")   for _ in range(8)]
+        wb.active = [DataPoint(x=0.7, y=0.5, energy=1.5, kind="predator") for _ in range(4)]
+        result = run_collision(wa, wb, steps=5)
+        assert result["steps_run"] == 5
+        assert len(result["trace"]) == 5
+        assert "prey_mean" in result["trace"][0]
+        assert "pred_mean" in result["trace"][0]
+
+    def test_run_collision_does_not_mutate_originals(self):
+        from geolatent.simulator import WorldState, DataPoint
+        from geolatent.collision import run_collision
+        wa, wb = WorldState(), WorldState()
+        wa.active = [DataPoint(x=0.3, y=0.5, energy=1.0, kind="prey")   for _ in range(5)]
+        wb.active = [DataPoint(x=0.7, y=0.5, energy=1.5, kind="predator") for _ in range(5)]
+        e_before = wa.active[0].energy
+        run_collision(wa, wb, steps=10)
+        assert wa.active[0].energy == e_before   # original untouched
+
+
+# =============================================================================
+# Genealogy — Immortal cell FIFO ledger
+# =============================================================================
+
+class TestGenealogy:
+    def _make_state_with_terrain(self):
+        from geolatent.simulator import WorldState, DataPoint, synthesize_topology
+        state = WorldState(grid_w=10, grid_h=8)
+        state.active = [DataPoint(x=0.5, y=0.5, energy=1.0) for _ in range(10)]
+        state.terrain = synthesize_topology(state)
+        return state
+
+    def test_update_adds_candidates(self):
+        from geolatent.genealogy import update_immortal_candidates
+        state = self._make_state_with_terrain()
+        update_immortal_candidates(state, state.terrain)
+        assert len(state.immortal_candidates) > 0
+
+    def test_ticks_increment_on_repeat(self):
+        from geolatent.genealogy import update_immortal_candidates
+        state = self._make_state_with_terrain()
+        update_immortal_candidates(state, state.terrain)
+        update_immortal_candidates(state, state.terrain)
+        assert any(v >= 2 for v in state.immortal_candidates.values())
+
+    def test_get_immortal_cells_threshold(self):
+        from geolatent.genealogy import get_immortal_cells
+        from geolatent.simulator import WorldState
+        state = WorldState(grid_w=8, grid_h=6)
+        state.immortal_candidates[(2, 3)] = 1000
+        state.immortal_candidates[(5, 1)] = 500
+        immortals = get_immortal_cells(state)
+        assert len(immortals) == 1
+        assert immortals[0]["gx"] == 2
+
+    def test_fifo_cap_enforced(self):
+        from geolatent.genealogy import update_immortal_candidates, _FIFO_CAP
+        from geolatent.simulator import WorldState
+        state = WorldState(grid_w=60, grid_h=40)
+        # Pre-fill with max entries
+        for i in range(_FIFO_CAP):
+            state.immortal_candidates[(i, 0)] = 1
+        # Build a terrain that covers new cells — should evict oldest
+        import numpy as np
+        terrain = [[float((r + c) % 3) for c in range(60)] for r in range(40)]
+        update_immortal_candidates(state, terrain)
+        assert len(state.immortal_candidates) <= _FIFO_CAP
+
+    def test_legacy_alias_threshold(self):
+        from geolatent.genealogy import get_immortal_cells_local
+        from geolatent.simulator import WorldState
+        state = WorldState()
+        state.immortal_candidates[(0, 0)] = 2000
+        state.immortal_candidates[(1, 1)] = 1999
+        result = get_immortal_cells_local(state, threshold=2000)
+        assert len(result) == 1
+        assert result[0]["ticks"] == 2000
+
+
+# =============================================================================
+# Performance analytics
+# =============================================================================
+
+class TestPerformance:
+    def _engine(self, steps=0):
+        from geolatent.engine import GeolatentEngine
+        e = GeolatentEngine(grid_w=10, grid_h=8)
+        if steps:
+            e.run(steps)
+        return e
+
+    def test_score_in_range(self):
+        from geolatent.performance import compute_performance
+        e = self._engine(steps=5)
+        result = compute_performance(e.state, [])
+        assert 0.0 <= result["score"] <= 1.0
+
+    def test_grade_valid(self):
+        from geolatent.performance import compute_performance
+        e = self._engine(steps=5)
+        result = compute_performance(e.state, [])
+        assert result["grade"] in ("A", "B", "C", "D")
+
+    def test_score_rises_with_interventions(self):
+        from geolatent.performance import compute_performance
+        from geolatent.simulator import WorldState
+        state = WorldState(grid_w=10, grid_h=8)
+        state.step = 10
+        no_roi  = compute_performance(state, [])
+        hi_roi  = compute_performance(state, [{"roi": 0.95}] * 10)
+        assert hi_roi["score"] >= no_roi["score"]
+
+    def test_empty_state_returns_valid(self):
+        from geolatent.performance import compute_performance
+        from geolatent.simulator import WorldState
+        state = WorldState()
+        result = compute_performance(state, [])
+        assert "score" in result
+        assert "grade" in result
+
+    def test_lookahead_returns_scene(self):
+        from geolatent.engine import GeolatentEngine
+        e = self._engine(steps=3)
+        scene = e.lookahead(steps=2)
+        assert "vertices" in scene
+        assert len(scene["vertices"]) == e.state.grid_w * e.state.grid_h

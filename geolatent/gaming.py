@@ -263,7 +263,7 @@ var ws := WebSocketPeer.new()
 var player_id := ""
 
 func _ready():
-    ws.connect_to_url("ws://localhost:8000/gaming/ws")
+    ws.connect_to_url("ws://YOUR_SERVER:PORT/gaming/ws")
 
 func _process(_delta):
     ws.poll()
@@ -317,7 +317,7 @@ using Newtonsoft.Json.Linq;
 
 public class GeoLatentClient : MonoBehaviour {
     private static readonly HttpClient _http = new();
-    private const string BASE = "http://localhost:8000";
+    private const string BASE = "http://YOUR_SERVER:PORT";
     private const string TOKEN = "YOUR_JWT_HERE";
 
     async void Start() {
