@@ -11,6 +11,28 @@ from __future__ import annotations
 import os
 import sys
 import json
+
+# Load .env before anything else reads os.environ (idempotent — skips if vars set)
+def _bootstrap_dotenv():
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    env_path = os.path.join(root, ".env")
+    if not os.path.exists(env_path):
+        return
+    try:
+        from dotenv import load_dotenv
+        load_dotenv(env_path, override=False)
+    except ImportError:
+        with open(env_path) as _f:
+            for _line in _f:
+                _line = _line.strip()
+                if not _line or _line.startswith("#") or "=" not in _line:
+                    continue
+                _k, _, _v = _line.partition("=")
+                _k = _k.strip(); _v = _v.strip().strip('"').strip("'")
+                if _k and _k not in os.environ:
+                    os.environ[_k] = _v
+
+_bootstrap_dotenv()
 import hashlib
 import hmac
 import time

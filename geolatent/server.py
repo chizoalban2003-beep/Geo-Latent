@@ -6,7 +6,32 @@ Initialises engine on app.state before the lifespan runs.
 from __future__ import annotations
 import os
 import sys
-from geolatent.api import app
+
+# Load .env from project root before anything else reads os.environ
+def _load_dotenv():
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    env_path = os.path.join(root, ".env")
+    if not os.path.exists(env_path):
+        return
+    try:
+        from dotenv import load_dotenv
+        load_dotenv(env_path, override=False)
+    except ImportError:
+        # Fallback: manual parse
+        with open(env_path) as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, _, v = line.partition("=")
+                k = k.strip()
+                v = v.strip().strip('"').strip("'")
+                if k and k not in os.environ:
+                    os.environ[k] = v
+
+_load_dotenv()
+
+from geolatent.api import app  # noqa: E402 (must be after env load)
 
 
 def _init_default_engine():
